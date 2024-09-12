@@ -1,0 +1,337 @@
+from flask import Flask, render_template_string, request, redirect, url_for, session, flash
+import folium
+import io
+import re
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'your_secret_key'
+
+# Dummy user credentials
+USERNAME = 'admin'
+PASSWORD = '123'
+
+# Initialize an empty list for employees
+employees = []
+
+
+# Route for login page
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        if username == USERNAME and password == PASSWORD:
+            session['logged_in'] = True
+            return redirect(url_for('index'))
+        else:
+            flash('Invalid credentials, please try again.')
+    return render_template_string('''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f0f0;
+        }
+        form {
+            width: 300px;
+            margin: auto;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: white;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        input, button {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .flash {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <form method="POST">
+        <h2>Login</h2>
+        {% with messages = get_flashed_messages(with_categories=True) %}
+            {% if messages %}
+                <div class="flash">
+                    {% for message in messages %}
+                        <p>{{ message }}</p>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+        <label for="username">Username:</label>
+        <input type="text" name="username" required><br>
+        <label for="password">Password:</label>
+        <input type="password" name="password" required><br>
+        <button type="submit">Login</button>
+    </form>
+</body>
+</html>
+''')
+
+
+# Route to display map with multiple locations and manage employees
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+
+    if request.method == 'POST':
+        try:
+            employee_id = request.form.get('employee_id')
+            name = request.form.get('name')
+            machine_name = request.form.get('machine_name')
+            whatsapp_link = request.form.get('whatsapp_link')
+            number_of_moves = request.form.get('number_of_moves', 0)
+
+            # Extract coordinates from WhatsApp link
+            lat, lng = extract_coordinates(whatsapp_link)
+            if lat and lng:
+                # Check if employee exists and update locations, otherwise add new employee
+                found = False
+                for emp in employees:
+                    if emp['id'] == int(employee_id):
+                        emp['locations'].append({'lat': lat, 'lng': lng, 'timestamp': '2024-09-12T11:00:00'})
+                        emp['number_of_moves'] = int(number_of_moves)
+                        flash('Location updated successfully!')
+                        found = True
+                        break
+
+                if not found:
+                    employees.insert(0, {
+                        'id': int(employee_id),
+                        'name': name,
+                        'role': 'Unknown Role',  # Default role
+                        'machine_name': machine_name,
+                        'number_of_moves': int(number_of_moves),
+                        'locations': [{'lat': lat, 'lng': lng, 'timestamp': '2024-09-12T11:00:00'}]
+                    })
+                    flash('New employee added successfully!')
+            else:
+                flash('Invalid WhatsApp link!')
+        except Exception as e:
+            flash(f'Error: {e}')
+
+    # Create a base map
+    map_obj = folium.Map(location=[20.0, 0.0], zoom_start=2)
+
+    # Add a marker for each location
+    for emp in employees:
+        for location in emp['locations']:
+            folium.Marker(
+                location=[location['lat'], location['lng']],
+                popup=f'Employee ID: {emp["id"]}, Name: {emp["name"]}, Time: {location["timestamp"]}',
+                icon=folium.Icon(color='blue')
+            ).add_to(map_obj)
+
+    # Save map to an in-memory file
+    map_data = io.BytesIO()
+    map_obj.save(map_data, close_file=False)
+    map_data.seek(0)
+
+    map_html = map_data.getvalue().decode('utf-8')
+
+    return render_template_string('''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Field Support Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        table, th, td {
+            border: 1px solid #ddd;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        form {
+            margin-bottom: 20px;
+            padding: 20px;
+            background-color: white;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        form input, form select, form button {
+            margin-bottom: 10px;
+            padding: 8px;
+            font-size: 16px;
+        }
+        .map-container {
+            margin: 20px 0;
+        }
+        .flash {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <h1>Field Support Dashboard</h1>
+
+    <!-- Display Flash Messages -->
+    {% with messages = get_flashed_messages(with_categories=True) %}
+        {% if messages %}
+            <div class="flash">
+                {% for message in messages %}
+                    <p>{{ message }}</p>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    <!-- Dashboard to show Employee locations and number of moves -->
+    <table>
+        <tr>
+            <th>Employee Name</th>
+            <th>Role</th>
+            <th>Machine Name</th>
+            <th>Last Location</th>
+            <th>Number of Moves</th>
+        </tr>
+        {% for employee in employees %}
+        <tr>
+            <td>{{ employee.name }}</td>
+            <td>{{ employee.role }}</td>
+            <td>{{ employee.machine_name }}</td>
+            <td>
+                {% if employee.locations|length > 0 %}
+                <a href="https://www.google.com/maps?q={{ employee.locations[-1].lat }},{{ employee.locations[-1].lng }}&z=17&hl=en" target="_blank">
+                    View Location on Map
+                </a>
+                {% else %}
+                No location data
+                {% endif %}
+            </td>
+            <td>{{ employee.number_of_moves }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <!-- Form to add location and details -->
+    <h2>Show Location and Add Details</h2>
+    <form method="POST">
+        <label for="employee_id">Employee ID:</label>
+        <input type="text" name="employee_id" required><br>
+        <label for="name">Name:</label>
+        <input type="text" name="name" required><br>
+        <label for="machine_name">Machine Name:</label>
+        <input type="text" name="machine_name" required><br>
+        <label for="whatsapp_link">WhatsApp Live Location Link:</label>
+        <input type="text" name="whatsapp_link" required><br>
+        <label for="number_of_moves">Number of Moves:</label>
+        <input type="number" name="number_of_moves" value="0" required><br>
+        <button type="submit">Show Location</button>
+    </form>
+
+    <!-- Button to show all locations -->
+    <a href="{{ url_for('show_all_locations') }}">
+        <button type="button">Show All Locations</button>
+    </a>
+
+    <!-- Display the map with all locations -->
+    <div class="map-container">
+        <h2>All Locations</h2>
+        {{ map_html | safe }}
+    </div>
+
+</body>
+</html>
+''', map_html=map_html, employees=employees)
+
+
+# Route to show all locations on separate maps
+@app.route('/show_all_locations')
+def show_all_locations():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+
+    maps_html = ''
+    for emp in employees:
+        # Create a map for each employee
+        map_obj = folium.Map(location=[20.0, 0.0], zoom_start=2)
+        for location in emp['locations']:
+            folium.Marker(
+                location=[location['lat'], location['lng']],
+                popup=f'Employee ID: {emp["id"]}, Name: {emp["name"]}, Time: {location["timestamp"]}',
+                icon=folium.Icon(color='blue')
+            ).add_to(map_obj)
+        # Save the map to an in-memory file
+        map_data = io.BytesIO()
+        map_obj.save(map_data, close_file=False)
+        map_data.seek(0)
+        map_html = map_data.getvalue().decode('utf-8')
+        maps_html += f'<h2>Map for {emp["name"]} (Employee ID: {emp["id"]})</h2>{map_html}<br>'
+
+    return render_template_string('''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>All Locations</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        .map-container {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <h1>All Employee Locations</h1>
+    {{ maps_html|safe }}
+    <a href="{{ url_for('index') }}">
+        <button type="button">Back to Dashboard</button>
+    </a>
+</body>
+</html>
+''', maps_html=maps_html)
+
+
+def extract_coordinates(link):
+    match = re.search(r'q=(-?\d+\.\d+),(-?\d+\.\d+)', link)
+    if match:
+        lat = float(match.group(1))
+        lng = float(match.group(2))
+        return lat, lng
+    return None, None
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
